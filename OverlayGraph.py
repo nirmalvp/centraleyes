@@ -1,6 +1,11 @@
 import pickle
 from sage.all import *
 import config as cfg
+from logger import applogger
+import itertools
+from multiprocessing.dummy import Pool as ThreadPool
+
+
 class OverlayGraph():
     def __init__(self):
         self._graphLayer = []
@@ -17,28 +22,42 @@ class OverlayGraph():
                 intermediateVertices = edgeLabel.get("intermediateVertices", [])
                 yield (neighbourVertex, intermediateVertices)
 
+    def createEdges(self, vertex, i) :
+
+        for (neighbourVertex, intermediateVerticesBetweenSourceAndNeighbour) in self._getAllNeighbourDetails(vertex, i):
+            if neighbourVertex in self._coveredVertices[i]:
+                applogger.debug("In cover %s : %s : %s"%(vertex, intermediateVerticesBetweenSourceAndNeighbour, neighbourVertex))
+                #print "In cover " , vertex, intermediateVerticesBetweenSourceAndNeighbour, neighbourVertex
+                self.overlayLayer.add_edge(vertex, neighbourVertex, {"intermediateVertices":intermediateVerticesBetweenSourceAndNeighbour})
+            ##If neighbour isnt in the cover, the neighbour of neightbour definitely is
+            else :
+                for (neighbourOfNeighbourVertex, intermediateVerticesBetweenNeighbours) in self._getAllNeighbourDetails(neighbourVertex, i) :
+                    newIntermediateVertices = []
+                    if neighbourOfNeighbourVertex != vertex:
+                        newIntermediateVertices.extend(intermediateVerticesBetweenSourceAndNeighbour)
+                        newIntermediateVertices.append(neighbourVertex)
+                        newIntermediateVertices.extend(intermediateVerticesBetweenNeighbours)
+                        applogger.debug("not cover %s : %s : %s"%(vertex, newIntermediateVertices, neighbourOfNeighbourVertex))
+                        #print "not cover " , vertex, newIntermediateVertices, neighbourOfNeighbourVertex
+                        self.overlayLayer.add_edge(vertex, neighbourOfNeighbourVertex, {"intermediateVertices":newIntermediateVertices})
+
     def _createAllPathLayer(self, i) :
-        overlayLayer = DiGraph(multiedges=True)
-        print "Cover vertices = " , self._coveredVertices[i]
-        for vertex in self._coveredVertices[i]:
-            for (neighbourVertex, intermediateVerticesBetweenSourceAndNeighbour) in self._getAllNeighbourDetails(vertex, i):
-                if neighbourVertex in self._coveredVertices[i]:
-                    print "In cover" , vertex, intermediateVerticesBetweenSourceAndNeighbour, neighbourVertex
-                    overlayLayer.add_edge(vertex, neighbourVertex, {"intermediateVertices":intermediateVerticesBetweenSourceAndNeighbour})
-                ##If neighbour isnt in the cover, the neighbour of neightbour definitely is
-                else :
-                    for (neighbourOfNeighbourVertex, intermediateVerticesBetweenNeighbours) in self._getAllNeighbourDetails(neighbourVertex, i) :
-                        newIntermediateVertices = []
-                        if neighbourOfNeighbourVertex != vertex:
-                            newIntermediateVertices.extend(intermediateVerticesBetweenSourceAndNeighbour)
-                            newIntermediateVertices.append(neighbourVertex)
-                            newIntermediateVertices.extend(intermediateVerticesBetweenNeighbours)
-                            print "not cover" , vertex, newIntermediateVertices, neighbourOfNeighbourVertex
-                            overlayLayer.add_edge(vertex, neighbourOfNeighbourVertex, {"intermediateVertices":newIntermediateVertices})
-        return overlayLayer
+        self.overlayLayer = DiGraph(multiedges=True)
+        applogger.debug("Cover vertices = %s" %self._coveredVertices[i])
+        pool = None
+        pool = ThreadPool()
+        pool.map(lambda v : self.createEdges(v,i), self._coveredVertices[i])
+        pool.close()
+        pool.join()
+        return self.overlayLayer
 
     def _createLayer(self, i):
+
         undirectedGraph = Graph(self._graphLayer[i-1])
+        undirectedGraph.remove_multiple_edges()
+        #g = undirectedGraph.plot()
+        #save(g,'/tmp/dom%s.png'%(i-1),axes=False,aspect_ratio=True)
+        #os.system('display /tmp/dom%s.png'%(i-1))
         self._coveredVertices[i] = undirectedGraph.vertex_cover()
         if cfg.ALLPATH:
             self._graphLayer[i] = self._createAllPathLayer(i)
