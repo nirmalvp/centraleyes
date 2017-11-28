@@ -16,9 +16,8 @@ class OverlayGraph():
             #Check if we already have created an overlay graph before. The program can load the file and initialize instantly without
             #re-creating overlay graphs from the scratch
             overlayGraphFile = cfg.filelocation["OVERLAYGRAPH"]
-            self._graphLayer = pickle.load(open( overlayGraphFile, "rb" ))
+            self._graphLayer = load(overlayGraphFile)
             #OverlayGraphs are pickled as a list of networkx graphs. So COnverting each networkx element in the list  into a DiGraph object
-            self._graphLayer = map(DiGraph, self._graphLayer)
         except IOError:
             #This occures if a pre-existing overlay graph file doesnt exist on disk. We need to create an overlay graph and store it so that future runs
             #dont have to do this again.
@@ -34,12 +33,9 @@ class OverlayGraph():
 
     def _writeOverLayGraphToFile(self) :
         graphLayerList = []
-        #WOrkaround since Digraph object can't be directly pickled. However, pickle works on networkx objects
-        for graphLayer in self._graphLayer :
-            graphLayerList.append(graphLayer.networkx_graph())
         try :
             overlayGraphFile = cfg.filelocation["OVERLAYGRAPH"]
-            pickle.dump(graphLayerList, open(overlayGraphFile, "wb" ))
+            save(self._graphLayer, overlayGraphFile)
         except IOError:
             applogger.error("Error while writing overlayGraphFile")
 
@@ -125,7 +121,7 @@ class OverlayGraph():
             self._graphLayer = [[] for k in xrange(numberOfLayers)]
             self._coveredVertices = [[] for k in xrange(numberOfLayers)]
             #Initialize the first layer as the raw graph data
-            self._graphLayer[0] = DiGraph(pickle.load(open( baseGraphFile, "rb" )))
+            self._graphLayer[0] = load(baseGraphFile)
             applogger.debug("Loaded baseGraph")
             #Initialize the cover in the first layer as all the vertices of the raw graph
             self._coveredVertices[0] = self._graphLayer[0].vertices()
@@ -135,7 +131,6 @@ class OverlayGraph():
                 self._createLayer(layerNum)
                 applogger.debug("Layer %s Generated. Number of vertices = %s, Number of edges = %s"%(layerNum, self._graphLayer[layerNum].order(), self._graphLayer[layerNum].size()))
                 #pickle.dump(self._graphLayer[i].networkx_graph(),open("/home/nirmal/%s.pickle"%i, "wb" ))
-            #print self._graphLayer[numberOfLayers-1].edges(labels=True)
         except IOError :
             print "No base file located"
             import sys
