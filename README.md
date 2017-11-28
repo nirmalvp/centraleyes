@@ -1,8 +1,8 @@
 # centraleyes
 
-##HOW TO RUN :
+## HOW TO RUN :
 
-###Prerequisite :
+### Prerequisite :
 	1. A sage Digraph saved into file in the same folder as script.
     2. Edit config file to point "BASEGRAPH" to the location of file in Point 1.
 	3. Edit Config files to set the number of layers for the overlay graph heirarchy
