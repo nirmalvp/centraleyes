@@ -7,6 +7,31 @@ from multiprocessing.dummy import Pool as ThreadPool
 from heapq import  heappop, heappush
 
 #OverlayGraph maintains the k layers of Overlay graphs where _graphLayer[n] is the nth overlay layer
+"""
+Overlay Graph is a condensed form(lesser vertices of your input roadmap.
+This helps you to run your dijsktra queries on this condensed graph rather than a real road map
+with possibly millions of node.
+
+The class here is a heirarchy of overlay Graph where each layer is an overlay graph.
+At each layer, the number of vertices in the graph reduces, however the edge could also increase
+since there is an edge in the overlay graph corresponding to every actual route in the road map,
+between the vertices of the overlay graph.
+
+Your basegraph could contain enormous information (number of traffic lights, travel time, distance, turn costs) etc that you may
+not want the user to query by.
+
+For all the queriable metrices, add a corresponding entry in "metrics" field in the config file to make it queriable.
+
+Overlay graph at level I is constructed by considering only the vertex covers of the graph at level (i-1)
+and adding an edge corresponding to every route between these vertex covers in the immediate lower layer.
+
+This leads to a formation of 2^k-All Path Cover of the base graph, where k is the number of layers
+
+
+For proof and additional informations :
+1. http://www.vldb.org/pvldb/vol7/p893-funke.pdf
+2. https://dl.acm.org/citation.cfm?id=2983712
+"""
 class OverlayGraph():
     def __init__(self):
         #_graphLayer[n] is the nth overlay layer
@@ -302,7 +327,7 @@ class OverlayGraph():
 
 overlay = OverlayGraph()
 path =  overlay.findOptimumRoute(overlay._graphLayer[0].random_vertex(), overlay._graphLayer[0].random_vertex(), {'dist' : 1})
-#path =  overlay.findOptimumRoute((7.2308766, 43.7331929), (7.2726154, 43.7474937), {'dist' : 1})
+#path =  overlay.findOptimumRoute((7.1726888, 43.7121988), (7.2485915, 43.7356081), {'dist' : 1})
 #Prints x,y cordinates into a csv such that A gis application like QGIS can read it
 route =  path[1]
 import csv
