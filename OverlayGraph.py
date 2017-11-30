@@ -149,18 +149,25 @@ class OverlayGraph():
                 applogger.debug("Generating Layer %s"%layerNum)
                 self._createLayer(layerNum)
                 applogger.debug("Layer %s Generated. Number of vertices = %s, Number of edges = %s"%(layerNum, self._graphLayer[layerNum].order(), self._graphLayer[layerNum].size()))
+            applogger.debug("OverlayGraph creation complete")
         except IOError :
             print "No base file located"
             import sys
             sys.exit()
-
+    #To run, Dijsktra on the overlay graph, we initialize the priority Q with every access node obtained in the forward
+    #search and its cost from source. By the end of the Dijstra in Overlay graph, we get the cost from source to every
+    #access node of the target
     def _runDijsktraOnOverlay(self,forwardAccessNodePathCost, targetAccessNodes, userWieghts) :
         queue = []
         for accessNodeOfSource, costToAccessNode in forwardAccessNodePathCost:
+            #Initialize the priority Q with all accessNodes
             heappush(queue, (costToAccessNode,(accessNodeOfSource, None, [])))
         visited = {}
         overlayGraph = self._graphLayer[self._numberOfLayers - 1]
-        #print overlayGraph.edges()
+        #We stop when all the targetAccessNodes are settled.
+        #Everytime we encounter a target node, remove it from targetAccessNodes.
+        #When all of them have been settled, targetAccessNodes will become empty and we
+        #can stop the dijsktra
         while queue and targetAccessNodes:
             path_cost, (vertex, parentOfVertex, edgeIntermediateVertices) = heappop(queue)
             if visited.get(vertex) is None:
@@ -170,6 +177,9 @@ class OverlayGraph():
                 for neighbourOverlayNode in overlayGraph.neighbors_out(vertex):
                     if visited.get(neighbourOverlayNode) is None:
                         edges = overlayGraph.edge_label(vertex, neighbourOverlayNode)
+                        #In overlay graphs, there could be multiple edges between 2 nodes
+                        #Hence we need to retrieve edgeIntermediateVertices, to get the actual
+                        #list of intermediate vertices between overlay nodes
                         edge_cost, edgeIntermediateVertices = self._getMinimumWeightedEdge(edges, userWieghts)
                         heappush(queue, (path_cost + edge_cost, (neighbourOverlayNode, vertex, edgeIntermediateVertices)))
         return visited
@@ -246,6 +256,7 @@ class OverlayGraph():
                 eg : {'dist' : 1, 'traffic_lights:0'} will find the optimum path considering shortest distance between source and target
                      {'dist' : 0, 'traffic_lights:1'} will find the optimum path considering least amount of traffic lights between source and target
         """
+        applogger.debug("Start of Query")
         args = [(sourceVertex, True), (targetVertex, False)]
         pool = ThreadPool(2)
         #Run a bi-directional dijsktra parallely : A forward Dijsktra from source and a backward dijsktra from the target
@@ -260,7 +271,7 @@ class OverlayGraph():
         verticesVisitedDuringBackwardSearch, backWardAccessNodes = backwardWardResult
         #TargetVertex was already settled during the forward search. We have nothing more to do here.
         if targetVertex in verticesVisitedDuringForwardSearch :
-            path = self._getNodesAlongShortestPath(targetVertex, verticesVisitedDuringForwardSearch)
+            path,_ = self._getNodesAlongShortestPath(targetVertex, verticesVisitedDuringForwardSearch)
             path.reverse()
             return path
         #To run, Dijsktra on the overlay graph, we initialize the priority Q with every access node obtained in the forward
@@ -270,17 +281,36 @@ class OverlayGraph():
         verticesVisitedDuringOverlaySearch = self._runDijsktraOnOverlay(forwardAccessNodePathCost, backWardAccessNodes.copy(), userWieghts)
         #Sample verticesVisitedDuringOverlaySearch :
         #{10: {'cost': 1, 'intermediateVerticesToParent': [], 'parent': None}, 4: {'cost': 3, 'intermediateVerticesToParent': [], 'parent': None}, 6: {'cost': 4, 'intermediateVerticesToParent': [], 'parent': 4}}
+        #Pick the target access node that minimizes the cost of (source to access node) + (access node to target)
         distToTargetViaAcessNodes = map(lambda accessNode : (verticesVisitedDuringOverlaySearch[accessNode].get("cost") + verticesVisitedDuringBackwardSearch[accessNode].get("cost"), accessNode), backWardAccessNodes)
         minimumCost, minimumAccessNode = min(distToTargetViaAcessNodes)
+        #Here , we create the shortest route from the source to target.
+        #For , overlay search, we use the parent heirarchy and the edgeIntermediate vertices to retrieve the actual path
         pathAlongOverLayGraph,lastNode = self._getNodesAlongShortestPath(minimumAccessNode, verticesVisitedDuringOverlaySearch, True)
         pathAlongForwardSearch,_ = self._getNodesAlongShortestPath(lastNode, verticesVisitedDuringForwardSearch, False)
         pathAlongBackWardSearch,_ = self._getNodesAlongShortestPath(minimumAccessNode, verticesVisitedDuringBackwardSearch, False)
         path = []
         path.extend(pathAlongOverLayGraph)
         path.extend(pathAlongForwardSearch)
+        #The parent heirarchy lists the route in reverse order. So we reverse it to obtain the forward order
         path.reverse()
+        #Backward search operated in the backward direction. So the parent heirarchy will already list vertices in the actual forward order
+        #So, no need to reverse it
         path.extend(pathAlongBackWardSearch)
-        return path
+        applogger.debug("End of Query")
+        return (minimumCost, path)
 
 overlay = OverlayGraph()
-overlay.findOptimumRoute(1, 8, {'dist' : 1})
+path =  overlay.findOptimumRoute(overlay._graphLayer[0].random_vertex(), overlay._graphLayer[0].random_vertex(), {'dist' : 1})
+#path =  overlay.findOptimumRoute((7.2308766, 43.7331929), (7.2726154, 43.7474937), {'dist' : 1})
+#Prints x,y cordinates into a csv such that A gis application like QGIS can read it
+route =  path[1]
+import csv
+with open(r'route.csv', 'w') as f:
+    writer = csv.writer(f, quoting=csv.QUOTE_NONE, escapechar=' ', lineterminator='\n')
+    writer.writerow('yx')
+for point in route:
+    fields=['{0},{1}'.format(point[1], point[0])]
+    with open(r'route.csv', 'a') as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_NONE, escapechar=' ', lineterminator='\n')
+        writer.writerow(fields)
