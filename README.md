@@ -35,7 +35,7 @@ This starts a server listening to a port. Your client can then send queries to t
 
 1. To get the optimum path between two points
 {"args": {"sourceVertex": [x1, y1], "destVertex": [x2, y2], userWieghts:{'dist':0, "traffic_light":1}}, "type": "query"}
-To query for path with smallest traffic lights
+To query for path with smallest traffic lights.
 
 userWieghts if not specified defaults to a optimum path considering shortest distance
 
