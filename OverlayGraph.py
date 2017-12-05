@@ -110,6 +110,9 @@ class OverlayGraph():
                     if neighbourOfNeighbourVertex != vertex:
                         intermediateVerticesBetweenSourceAndNeighbour = edgeMetricsBetweenSourceAndNeighbour["intermediateVertices"]
                         intermediateVerticesBetweenNeighbours = edgeMetricsBetweenNeighbours["intermediateVertices"]
+                        #Experiemntal. If they have a common intermediate node, useless path
+                        if not set(intermediateVerticesBetweenSourceAndNeighbour).isdisjoint(intermediateVerticesBetweenNeighbours):
+                            continue
                         newEdgeMetrics = { k: edgeMetricsBetweenSourceAndNeighbour[k] + edgeMetricsBetweenNeighbours[k] for k in set(edgeMetricsBetweenSourceAndNeighbour) if k != "intermediateVertices"}
                         newIntermediateVertices = []
                         newIntermediateVertices.extend(intermediateVerticesBetweenSourceAndNeighbour)
@@ -323,19 +326,86 @@ class OverlayGraph():
         #So, no need to reverse it
         path.extend(pathAlongBackWardSearch)
         applogger.debug("End of Query")
-        return (minimumCost, path)
+        #print path
+        jsonDict = {"minCost":minimumCost, "route" : path}
+        return jsonDict
 
-overlay = OverlayGraph()
-path =  overlay.findOptimumRoute(overlay._graphLayer[0].random_vertex(), overlay._graphLayer[0].random_vertex(), {'dist' : 1})
-#path =  overlay.findOptimumRoute((7.1726888, 43.7121988), (7.2485915, 43.7356081), {'dist' : 1})
-#Prints x,y cordinates into a csv such that A gis application like QGIS can read it
-route =  path[1]
-import csv
-with open(r'route.csv', 'w') as f:
-    writer = csv.writer(f, quoting=csv.QUOTE_NONE, escapechar=' ', lineterminator='\n')
-    writer.writerow('yx')
-for point in route:
-    fields=['{0},{1}'.format(point[1], point[0])]
-    with open(r'route.csv', 'a') as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_NONE, escapechar=' ', lineterminator='\n')
-        writer.writerow(fields)
+    def _modifyEdgeLabel(self,u,v, layerNum, currentEdgeLabel, newEdgeLabel) :
+        modifiedEdgeLabel = currentEdgeLabel.copy()
+        sameWeights = True
+        for metric in newEdgeLabel :
+            #If all the metrices in the new weights are equaivalent to whats already on the edge, we don't have to update the edge
+            if modifiedEdgeLabel.get(metric) != newEdgeLabel.get(metric):
+                sameWeights = false
+            modifiedEdgeLabel[metric] = newEdgeLabel.get(metric)
+        if not sameWeights :
+            applogger.debug("Modifying %s, %s, %s, %s"%(u, v, currentEdgeLabel, layerNum))
+            self._graphLayer[layerNum].delete_edge(u, v, currentEdgeLabel)
+            self._graphLayer[layerNum].add_edge(u, v, modifiedEdgeLabel)
+            #Sage doesnt support editing in place the edge weight between u,v when there are multiple edges between them
+            #So, I delete the old edge and then add the new edge with new weights(to emulate a modification)
+        else :
+            applogger.debug("Skip Modifying %s, %s, %s, %s"%(u, v, currentEdgeLabel, layerNum))
+
+    #Recursive internal function to update the edge weight
+    #Edge weights need to propogated from the baselayer upto the highest overlay layer
+    #So we call this function recursively for each layer
+    def _updateHeirarchicalInternal(self, sourceCoveredVertex, targetCoveredVertex, newWeight, layerNum, changedU, changedV):
+        #applogger.debug("starting fn with %s, %s, %s, %s and %s"%(sourceCoveredVertex, targetCoveredVertex, layerNum, changedU, changedV))
+        #We iterate through all routes between two covered vertices , sourceCoveredVertex and targetCoveredVertex
+        for _, _, currentEdgeLabel in self._graphLayer[layerNum].edge_boundary([sourceCoveredVertex],[targetCoveredVertex]) :
+            intermediateVertices = currentEdgeLabel.get("intermediateVertices", [])
+            #if between u and v, there is a direct edge(No intermediate vertices) betweeen them change the cost of the direct edge
+            if changedU == sourceCoveredVertex and changedV == targetCoveredVertex and not intermediateVertices :
+                self._modifyEdgeLabel(sourceCoveredVertex,targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+            elif changedU == sourceCoveredVertex:
+                #If sourceVertex(First vertex) of this route is u, the edge uv exist only in this route if the first intermediate node is v.
+                #We modify such a route, if it exists
+                if intermediateVertices and changedV  == intermediateVertices[0]:
+                    self._modifyEdgeLabel(sourceCoveredVertex, targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+            elif changedV == targetCoveredVertex :
+                #If targetVertex(last vertex) of this route is v, the edge uv exist only in this route if the last intermediate node is u.
+                #We modify such a route, if it exists
+                if intermediateVertices and changedU  == intermediateVertices[-1]:
+                    self._modifyEdgeLabel(sourceCoveredVertex, targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+            else :
+            #If neither u or v are present at the first and last node, edge uv exists in this route only
+            #if they are present side by side along the intermediate path
+                for i in xrange(len(intermediateVertices)-1):
+                    if intermediateVertices[i] == changedU :
+                        if intermediateVertices[i+1] == changedV :
+                            self._modifyEdgeLabel(sourceCoveredVertex , targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+                        break
+        if layerNum >= self._numberOfLayers - 1:
+            return
+        #In this layer, we have modified the edge weight of a route between sourceCoveredVertex and targetCoveredVertex
+        #If both sourceCoveredVertex and targetCoveredVertex are covered vertices in the next layer as well, the modified edge exist
+        #between them in the next layer as well.
+        if sourceCoveredVertex in self._coveredVertices[layerNum + 1] and targetCoveredVertex in self._coveredVertices[layerNum + 1] :
+                self._updateHeirarchicalInternal(sourceCoveredVertex, targetCoveredVertex, newWeight, layerNum + 1, changedU, changedV)
+        #If targetCoveredVertex in this layer , is not a covered vertex on the next layer, the edge modified at this layer is going to be in one of
+        #the routes between sourceCoveredVertex and an outneighbour of targetCoveredVertex.
+        #Remember : Since covered vertex at layer i+1 is a vertex cover of layer i, if targetCoveredVertex is not in the layer i+1's cover,
+        #one of its neighbour surely is.
+        elif sourceCoveredVertex in self._coveredVertices[layerNum + 1] : ##target not in  vc
+            for neighbouroftargetCoveredVertex in self._graphLayer[layerNum].neighbors_out(targetCoveredVertex) :
+                if neighbouroftargetCoveredVertex != sourceCoveredVertex :
+                    self._updateHeirarchicalInternal(sourceCoveredVertex,neighbouroftargetCoveredVertex, newWeight, layerNum + 1, changedU, changedV)
+        else : #source is not in vc , target is
+        #If sourceCoveredVertex in this layer , is not a covered vertex on the next layer, the edge modified at this layer is going to be in one of
+        #the routes between in_neighbour of sourceCoveredVertex and an targetCoveredVertex.
+        #Remember : it is impossible for both sourceCoveredVertex and targetCoveredVertex to be not in the covered vertices of the next layer
+        #since that will violate the vertex cover property.
+            for inNeighbourOfSource in self._graphLayer[layerNum].neighbors_in(sourceCoveredVertex) :
+                self._updateHeirarchicalInternal(inNeighbourOfSource,targetCoveredVertex, newWeight, layerNum + 1, changedU, changedV)
+
+    #Public function that is called to update the weight of the edge uv.
+    #newWeight is a dict with {metric1:newcost, metric2:newCost}.
+    #If metric1 and metric2 already exist on the edge, their costs are updated or else a new metric is added
+    def updateWeight(self, u, v, newWeight) :
+        response={"success":True}
+        try :
+            self._updateHeirarchicalInternal(u, v, newWeight, 0, u, v)
+        except :
+            response["success"] = False
+        return response

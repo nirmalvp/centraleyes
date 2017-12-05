@@ -27,6 +27,20 @@ For proof and additional informations :
     4. Edit config file to set "metrics" to the list of metrics you want your users to query optimum path by. eg : slope, dist, travel_time etc. Note : These metrices should be available in your baseGraph. This config merely controls whether these metrics should
     also be present in the overlaygraph.
 
-Run : sage -python sock.py
+### Run : sage -python sock.py
 
-This starts a server listening to a port. Your client can then send the server the starting and the edestination vertex and the server will respond back with the list of vertices in the optimum path between the points.
+This starts a server listening to a port. Your client can then send queries to the server.
+
+### Sample queries :
+
+1. To get the optimum path between two points
+{"args": {"sourceVertex": [x1, y1], "destVertex": [x2, y2], userWieghts:{'dist':0, "traffic_light":1}}, "type": "query"}
+To query for path with smallest traffic lights
+
+userWieghts if not specified defaults to a optimum path considering shortest distance
+
+2. To change the edge cost between two points
+{"args": {"sourceVertex": [x1, y1], "destVertex": [x2, y2], "newWeight" : {"dist" : 10}}, "type": "changeweight"}
+To change the dist metric of the edge between  (x1,y1) and (x2, y2) to 10.
+
+

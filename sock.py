@@ -35,17 +35,28 @@ def clientthread(conn):
         try :
             data = conn.recv(1024)
             data = data.strip()
+            print "recv : ", data
             if not data or data[0] != '{' :
                 break
             data = json.loads(data)
+            requestType = data.get("type")
             args = data.get("args")
             sourceVertex = tuple(args.get("sourceVertex"))
             destVertex = tuple(args.get("destVertex"))
-            jsonDict = overlay.findOptimumRoute(sourceVertex, destVertex, {'dist' : 1})
+            if requestType == 'query' :
+                #if no userweieght specified default to a shortest path by dist
+                userWieghts = args.get("userWieghts", {'dist' : 1})
+                jsonDict = overlay.findOptimumRoute(sourceVertex, destVertex, userWieghts)
+            elif requestType = 'changeweight' :
+                newWeight = args.get('newWeight')
+                jsonDict = overlay.updateWeight(sourceVertex, destVertex, newWeight)
+            else :
+                jsonDict = {"success" : False, "reason" : "QueryType doesnt exist"}
             response = json.dumps(jsonDict)
-        except:
+        except Exception as e:
+            response = json.dumps({"success" : False, "reason" : "Internal error"})
             print "error occured"
-            response = "Sorry, an error occured"
+            print e
         conn.sendall(response)
     conn.close()
 
