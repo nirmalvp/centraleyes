@@ -21,9 +21,9 @@ For proof and additional informations :
 ## HOW TO RUN :
 
 ### Prerequisite :
-	1. A sage Digraph saved into file in the same folder as script. This could be your real road network graph.
+    1. A sage Digraph saved into file in the same folder as script. This could be your real road network graph.
     2. Edit config file to point "BASEGRAPH" to the location of file in Point 1.
-	3. Edit Config files to set the number of layers for the overlay graph heirarchy
+    3. Edit Config files to set the number of layers for the overlay graph heirarchy
     4. Edit config file to set "metrics" to the list of metrics you want your users to query optimum path by. eg : slope, dist, travel_time etc. Note : These metrices should be available in your baseGraph. This config merely controls whether these metrics should
     also be present in the overlaygraph.
 
@@ -33,14 +33,15 @@ This starts a server listening to a port. Your client can then send queries to t
 
 ### Sample queries :
 
-1. To get the optimum path between two points
+### 1. To get the optimum path between two points
 {"args": {"sourceVertex": [x1, y1], "destVertex": [x2, y2], userWieghts:{'dist':0, "traffic_light":1}}, "type": "query"}
-To query for path with smallest traffic lights.
+to query for path with smallest traffic lights.
 
 userWieghts if not specified defaults to a optimum path considering shortest distance
 
-2. To change the edge cost between two points
+### 2. To change the edge cost between two points
 {"args": {"sourceVertex": [x1, y1], "destVertex": [x2, y2], "newWeight" : {"dist" : 10}}, "type": "changeweight"}
+
 To change the dist metric of the edge between  (x1,y1) and (x2, y2) to 10.
 
 
