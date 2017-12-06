@@ -189,7 +189,7 @@ class OverlayGraph():
         queue = []
         for accessNodeOfSource, costToAccessNode in forwardAccessNodePathCost:
             #Initialize the priority Q with all accessNodes
-            heappush(queue, (costToAccessNode,(accessNodeOfSource, None, [])))
+            heappush(queue, ((costToAccessNode, 0),(accessNodeOfSource, None, [])))
         visited = {}
         overlayGraph = self._graphLayer[self._numberOfLayers - 1]
         #We stop when all the targetAccessNodes are settled.
@@ -197,9 +197,9 @@ class OverlayGraph():
         #When all of them have been settled, targetAccessNodes will become empty and we
         #can stop the dijsktra
         while queue and targetAccessNodes:
-            path_cost, (vertex, parentOfVertex, edgeIntermediateVertices) = heappop(queue)
+            (path_cost, hops), (vertex, parentOfVertex, edgeIntermediateVerticesToParent) = heappop(queue)
             if visited.get(vertex) is None:
-                visited[vertex] = {"cost":path_cost, "parent" : parentOfVertex , "intermediateVerticesToParent" : edgeIntermediateVertices}
+                visited[vertex] = {"cost":path_cost, "parent" : parentOfVertex , "intermediateVerticesToParent" : edgeIntermediateVerticesToParent}
                 if vertex in targetAccessNodes :
                     targetAccessNodes.remove(vertex)
                 for neighbourOverlayNode in overlayGraph.neighbors_out(vertex):
@@ -209,7 +209,7 @@ class OverlayGraph():
                         #Hence we need to retrieve edgeIntermediateVertices, to get the actual
                         #list of intermediate vertices between overlay nodes
                         edge_cost, edgeIntermediateVertices = self._getMinimumWeightedEdge(edges, userWieghts)
-                        heappush(queue, (path_cost + edge_cost, (neighbourOverlayNode, vertex, edgeIntermediateVertices)))
+                        heappush(queue, ((path_cost + edge_cost, hops+len(edgeIntermediateVertices)), (neighbourOverlayNode, vertex, edgeIntermediateVertices)))
         return visited
 
 
@@ -249,7 +249,7 @@ class OverlayGraph():
             if visited.get(v) is None: # v is unvisited
                 visited[v] = {"cost":path_cost, "parent": parent}
                 #If v is not an accessnode
-                if v not in self._coveredVertices[numberOfLayers-1] :
+                if parent not in self._coveredVertices[numberOfLayers-1] :
                     for neighbourVertex in directedNeighbors(v):
                         if visited.get(neighbourVertex) is None:
                             if forwardDirection:
@@ -260,7 +260,7 @@ class OverlayGraph():
                             #push to Q the new cost to neighbour and set myself as its parent
                             heappush(queue, (path_cost + edge_cost, (neighbourVertex, v)))
                 else :
-                    accessNodes.add(v)
+                    accessNodes.add(parent)
         return (visited, accessNodes)
 
     def _getNodesAlongShortestPath(self, startFrom, verticesVisitedDuringSearch, addFirstNode = True):
@@ -301,7 +301,8 @@ class OverlayGraph():
         if targetVertex in verticesVisitedDuringForwardSearch :
             path,_ = self._getNodesAlongShortestPath(targetVertex, verticesVisitedDuringForwardSearch)
             path.reverse()
-            return path
+            jsonDict = {"minCost" : verticesVisitedDuringForwardSearch.get(targetVertex).get("cost"), "route" : path}
+            return jsonDict
         #To run, Dijsktra on the overlay graph, we initialize the priority Q with every access node obtained in the forward
         #search and its cost from source. By the end of the Dijstra in Overlay graph, we get the cost from source to every
         #access node of the target
