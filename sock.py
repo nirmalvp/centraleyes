@@ -5,6 +5,7 @@ import json
 from sage.all import *
 from OverlayGraph import OverlayGraph
 
+
 HOST = ''   # Symbolic name meaning all available interfaces
 PORT = 12345 # Arbitrary non-privileged port
 
@@ -45,9 +46,9 @@ def clientthread(conn):
             destVertex = tuple(args.get("destVertex"))
             if requestType == 'query' :
                 #if no userweieght specified default to a shortest path by dist
-                userWieghts = args.get("userWieghts", {'dist' : 1})
+                userWieghts = args.get("userWeights", {'dist' : 1})
                 jsonDict = overlay.findOptimumRoute(sourceVertex, destVertex, userWieghts)
-            elif requestType = 'changeweight' :
+            elif requestType == 'changeweight' :
                 newWeight = args.get('newWeight')
                 jsonDict = overlay.updateWeight(sourceVertex, destVertex, newWeight)
             else :
