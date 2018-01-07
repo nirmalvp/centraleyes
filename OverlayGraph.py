@@ -5,6 +5,7 @@ from logger import applogger
 import itertools
 from multiprocessing.dummy import Pool as ThreadPool
 from heapq import  heappop, heappush
+import time
 
 #OverlayGraph maintains the k layers of Overlay graphs where _graphLayer[n] is the nth overlay layer
 """
@@ -32,6 +33,18 @@ For proof and additional informations :
 1. http://www.vldb.org/pvldb/vol7/p893-funke.pdf
 2. https://dl.acm.org/citation.cfm?id=2983712
 """
+
+def timeit(f):
+    def timed(self,*args, **kw):
+        ts = time.time()
+        result = f(self,*args, **kw)
+        te = time.time()
+        if not self._benchmark.get(f.__name__) :
+            self._benchmark[f.__name__] = []
+        self._benchmark[f.__name__].append(round((te -ts)*1000,1))
+        return result
+    return timed
+
 class OverlayGraph():
     def __init__(self):
         #_graphLayer[n] is the nth overlay layer
@@ -40,6 +53,7 @@ class OverlayGraph():
         self._coveredVertices = []
         self._metrics = cfg.metrics
         self._numberOfLayers = None
+        self._benchmark = {}
         try :
             #Check if we already have created an overlay graph before. The program can load the file and initialize instantly without
             #re-creating overlay graphs from the scratch
@@ -59,7 +73,7 @@ class OverlayGraph():
         if layerNum >= self._numberOfLayers or layerNum < 0:
             applogger.error("Layer doesnt exist")
         else :
-            save(self._graphLayer[layerNum].plot(), saveLocation+".png",axes=False)#,aspect_ratio=True)
+            save(self._graphLayer[layerNum].plot(edge_labels=False), saveLocation+".png",axes=False)#,aspect_ratio=True)
 
     def _plotAllLayer(self, saveLocation) :
         for layerNum in xrange(0, self._numberOfLayers):
@@ -68,8 +82,10 @@ class OverlayGraph():
 
     def _writeOverLayGraphToFile(self) :
         graphLayerList = []
+
         try :
             overlayGraphFile = cfg.filelocation["OVERLAYGRAPH"]
+            applogger.debug("Writing overlayGraph to file")
             save(self._graphLayer, overlayGraphFile)
         except IOError:
             applogger.error("Error while writing overlayGraphFile")
@@ -85,7 +101,6 @@ class OverlayGraph():
                 intermediateVertices = edgeLabel.get("intermediateVertices", [])
                 edgeMetrics = {}
                 edgeMetrics["intermediateVertices"] = intermediateVertices
-                #applogger.debug("EdgeLabel : %s"%edgeLabel)
                 for metric in self._metrics :
                     edgeMetrics[metric] = edgeLabel[metric]
                 yield (neighbourVertex, edgeMetrics)
@@ -93,13 +108,13 @@ class OverlayGraph():
     #Given a vertex v (included in the cover), this function creates an edge for every path from v to any other vertex that is also included
     #in the cover.
     def createEdges(self, vertex, layerNum) :
-        #applogger.debug("considering vertex : %s,%s"%(vertex))
         for (neighbourVertex, edgeMetricsBetweenSourceAndNeighbour) in self._getAllNeighbourDetails(vertex, layerNum - 1):
             #Graph (A->B->C). Imagine both A as well as B are included in the vertex cover(not optimum)
             #In the overlay graph, we add a edge from A to B and retain the intermediateVertices between A->B as it is in the lower layer
             if neighbourVertex in self._coveredVertices[layerNum]:
              #   edgeLabel = {"intermediateVertices":intermediateVerticesBetweenSourceAndNeighbour}
                 self.overlayLayer.add_edge(vertex, neighbourVertex, edgeMetricsBetweenSourceAndNeighbour)
+                self.overlayTopology.add_edge(vertex, neighbourVertex)
             else :
                 ##If immediate neighbour isnt in the vertex cover, the neighbour of neighbour is definitely in the vertex cover
                 #or else the vertex cover property is violated.
@@ -120,9 +135,11 @@ class OverlayGraph():
                         newIntermediateVertices.extend(intermediateVerticesBetweenNeighbours)
                         newEdgeMetrics["intermediateVertices"] = newIntermediateVertices
                         self.overlayLayer.add_edge(vertex, neighbourOfNeighbourVertex, newEdgeMetrics)
+                        self.overlayTopology.add_edge(vertex, neighbourOfNeighbourVertex)
     #This function creates an overlay graph by considering every route from one covered vertex to another covered vertex in the base graph
     def _createAllPathLayer(self, layerNum) :
         self.overlayLayer = DiGraph(multiedges=True)
+        self.overlayTopology = Graph()
         pool = None
         #Edge creation between nodes on the overlay graph can be parallelized. Hence using a threadpool.
         #https://stackoverflow.com/questions/2846653/how-to-use-threading-in-python
@@ -133,10 +150,54 @@ class OverlayGraph():
         #At this point overlayLayer at level i is complete. That is all routes between vertex covers of layer (i-1) is connected via an edge
         return self.overlayLayer
 
+    def _createShortestPathlayer(self, layerNum) :
+        graphLayer = DiGraph()
+        for coveredVertex in self._coveredVertices[layerNum] :
+            (visited, accessNodes) = self._createBestEdges(coveredVertex, layerNum)
+            #print accessNodes
+            for accessnode in accessNodes :
+                path,_ = self._getNodesAlongShortestPath(accessnode, visited, False)
+                path.reverse()
+                edgeMetrics = {'dist':visited.get(accessnode).get("cost"), 'intermediateVertices' : path[1:]}
+                graphLayer.add_edge(coveredVertex, accessnode, edgeMetrics)
+        return graphLayer
+
+    def _createBestEdges(self, sourceVertex, layerNum):
+        userWieghts = {'dist' : 1}
+        visited={}
+        accessNodes = set()
+        queue = [] #priority queue
+        #push to Priority Q values (cost, (currentVertex, parentOfCurrentVertex))
+        #Cost is set to 0 for the source vertex so that it is popped first
+        heappush(queue, (0,(sourceVertex, None)))
+        #Function _runPartialDijsktra is commonly used by Forward and backward Dijsktra.
+        #Using the forwardDirection boolean switch, we decide if we consider the outgoing(for forward) edges or
+        #incoming(for backward) edges
+        directedNeighbors = self._graphLayer[0].neighbors_out
+        while queue:
+            path_cost, (v, parent) = heappop(queue)
+            if visited.get(v) is None: # v is unvisited
+                visited[v] = {"cost":path_cost, "parent": parent}
+                #If v is not an accessnode
+                if parent not in self._coveredVertices[layerNum] or parent == sourceVertex:
+                    for neighbourVertex in directedNeighbors(v):
+                        if visited.get(neighbourVertex) is None:
+                            edges = self._graphLayer[0].edge_label(v , neighbourVertex)
+                            edge_cost, _ = self._getMinimumWeightedEdge(edges, userWieghts)
+                            #push to Q the new cost to neighbour and set myself as its parent
+                            heappush(queue, (path_cost + edge_cost, (neighbourVertex, v)))
+                else :
+                    accessNodes.add(parent)
+        return (visited, accessNodes)
+
+
+
     def _getVertexCoverOflayer(self, layerNum):
-        undirectedGraph = Graph(self._graphLayer[layerNum])
-        undirectedGraph.remove_multiple_edges()
-        undirectedGraph.allow_multiple_edges(False)
+        if self.overlayTopology is None:
+            undirectedGraph = self._graphLayer[layerNum]
+        else :
+            applogger.debug("Loaded topology map")
+            undirectedGraph = self.overlayTopology
         vertexAndDegreeTupleList = [vertexAndDegreeTuple for vertexAndDegreeTuple in undirectedGraph.degree_iterator(labels=True)]
         #Sort considering the order of the second key in the tuple ie degree, So that we have
         #this list sorted by ascending order of degree
@@ -148,6 +209,7 @@ class OverlayGraph():
         return vertexCover
 
     #This function Creates the ith layer of the graph using the (i-1)th layer
+    @timeit
     def _createLayer(self, layerNum):
         #Find the vertex cover of the graph at the lower layer. Vertex cover works only on for undirected graph in Sage
         #So, converting the lower layer into a undirected graph and also removing the multiple edges in the lower graph
@@ -158,6 +220,8 @@ class OverlayGraph():
         #This is a switch in-case I decide to store only the shortest path later instead of all routes from one node to another
         if cfg.ALLPATH:
             self._graphLayer[layerNum] = self._createAllPathLayer(layerNum)
+        else :
+            self._graphLayer[layerNum] = self._createShortestPathlayer(layerNum)
 
     def _createOverLayGraph(self):
         try :
@@ -167,12 +231,16 @@ class OverlayGraph():
             #initialize graphLayer . ie start with every layer as an empty list. Later on graphLayer[n] will be the nth layer of the overlay graph
             self._graphLayer = [None for k in xrange(self._numberOfLayers)]
             self._coveredVertices = [None for k in xrange(self._numberOfLayers)]
+
+
             #Initialize the first layer as the raw graph data
             self._graphLayer[0] = load(baseGraphFile)
             applogger.debug("Loaded baseGraph")
             #Initialize the cover in the first layer as all the vertices of the raw graph
             self._coveredVertices[0] = set(self._graphLayer[0].vertices())
+            self.overlayTopology = None
             applogger.debug("Retrieved baseGraph vertices")
+            applogger.debug("Layer %s Generated. Number of vertices = %s, Number of edges = %s"%(0, self._graphLayer[0].order(), self._graphLayer[0].size()))
             for layerNum in xrange(1, self._numberOfLayers) :
                 applogger.debug("Generating Layer %s"%layerNum)
                 self._createLayer(layerNum)
@@ -185,7 +253,10 @@ class OverlayGraph():
     #To run, Dijsktra on the overlay graph, we initialize the priority Q with every access node obtained in the forward
     #search and its cost from source. By the end of the Dijstra in Overlay graph, we get the cost from source to every
     #access node of the target
+    @timeit
     def _runDijsktraOnOverlay(self,forwardAccessNodePathCost, targetAccessNodes, userWieghts) :
+        #print forwardAccessNodePathCost
+        #print targetAccessNodes
         queue = []
         for accessNodeOfSource, costToAccessNode in forwardAccessNodePathCost:
             #Initialize the priority Q with all accessNodes
@@ -199,7 +270,7 @@ class OverlayGraph():
         while queue and targetAccessNodes:
             (path_cost, hops), (vertex, parentOfVertex, edgeIntermediateVerticesToParent) = heappop(queue)
             if visited.get(vertex) is None:
-                visited[vertex] = {"cost":path_cost, "parent" : parentOfVertex , "intermediateVerticesToParent" : edgeIntermediateVerticesToParent}
+                visited[vertex] = {"cost":path_cost, "parent" : parentOfVertex , "intermediateVerticesToParent" : edgeIntermediateVerticesToParent, "hops" : hops}
                 if vertex in targetAccessNodes :
                     targetAccessNodes.remove(vertex)
                 for neighbourOverlayNode in overlayGraph.neighbors_out(vertex):
@@ -212,23 +283,25 @@ class OverlayGraph():
                         heappush(queue, ((path_cost + edge_cost, hops+len(edgeIntermediateVertices)), (neighbourOverlayNode, vertex, edgeIntermediateVertices)))
         return visited
 
+    def getWeightedEdgeCost(self, edge, userWieghts) :
+        weightedEdgeCost = 0
+        for metric in userWieghts :
+            weightedEdgeCost += edge.get(metric) * userWieghts[metric]
+        return weightedEdgeCost
+
 
     #If edges is a single element, return the cost of the edge as per userWieght
     #If edges is a list of edges, returns the cost of the edge with the minimum cost
     def _getMinimumWeightedEdge(self, edges, userWieghts) :
-        def getWeightedEdgeCost(edge) :
-            weightedEdgeCost = 0
-            for metric in userWieghts :
-                weightedEdgeCost += edge.get(metric) * userWieghts[metric]
-            return weightedEdgeCost
         if type(edges) is list :
-            optimumEdge = min(edges, key = lambda d: getWeightedEdgeCost(d))
-            return (getWeightedEdgeCost(optimumEdge), optimumEdge.get("intermediateVertices", []))
-        return (getWeightedEdgeCost(edges), edges.get("intermediateVertices", []))
+            optimumEdge = min(edges, key = lambda d: self.getWeightedEdgeCost(d, userWieghts))
+            return (self.getWeightedEdgeCost(optimumEdge, userWieghts), optimumEdge.get("intermediateVertices", []))
+        return (self.getWeightedEdgeCost(edges, userWieghts), edges.get("intermediateVertices", []))
 
     #Runs a Dijsktra algorithm from sourceVertex but without expanding accessNodes.
     #Thus when the priority Q is empty, we will have the optimum path to every access node
     #reachable from sourceVertex.
+    @timeit
     def _runPartialDijsktra(self, sourceVertex, userWieghts, forwardDirection):
         numberOfLayers = self._numberOfLayers
         visited={}
@@ -263,6 +336,36 @@ class OverlayGraph():
                     accessNodes.add(parent)
         return (visited, accessNodes)
 
+    @timeit
+    def _runNormalDijsktra(self, sourceVertex, targetVertex, userWieghts):
+        applogger.debug("Running normal dijsktra")
+        numberOfLayers = self._numberOfLayers
+        visited={}
+        accessNodes = set()
+        queue = [] #priority queue
+        #push to Priority Q values (cost, (currentVertex, parentOfCurrentVertex))
+        #Cost is set to 0 for the source vertex so that it is popped first
+        heappush(queue, (0,(sourceVertex, None)))
+        #Function _runPartialDijsktra is commonly used by Forward and backward Dijsktra.
+        #Using the forwardDirection boolean switch, we decide if we consider the outgoing(for forward) edges or
+        #incoming(for backward) edges
+        directedNeighbors = self._graphLayer[0].neighbors_out
+        while queue:
+            path_cost, (v, parent) = heappop(queue)
+            if v == targetVertex :
+                #print path_cost, parent
+                #return
+            if visited.get(v) is None: # v is unvisited
+                visited[v] = {"cost":path_cost, "parent": parent}
+                #If v is not an accessnode
+                for neighbourVertex in directedNeighbors(v):
+                    if visited.get(neighbourVertex) is None:
+                        edges = self._graphLayer[0].edge_label(v , neighbourVertex)
+                        edge_cost, _ = self._getMinimumWeightedEdge(edges, userWieghts)
+                        #push to Q the new cost to neighbour and set myself as its parent
+                        heappush(queue, (path_cost + edge_cost, (neighbourVertex, v)))
+        return visited.get(targetVertex)
+
     def _getNodesAlongShortestPath(self, startFrom, verticesVisitedDuringSearch, addFirstNode = True):
         currentNode = startFrom
         path = []
@@ -276,6 +379,7 @@ class OverlayGraph():
             parent = verticesVisitedDuringSearch[currentNode].get("parent")
         return path, currentNode
 
+    @timeit
     def findOptimumRoute(self, sourceVertex, targetVertex, userWieghts):
         """Given two nodes on the graph, returns the optimum path along them
             @sourceVertex - Starting node
@@ -284,7 +388,6 @@ class OverlayGraph():
                 eg : {'dist' : 1, 'traffic_lights:0'} will find the optimum path considering shortest distance between source and target
                      {'dist' : 0, 'traffic_lights:1'} will find the optimum path considering least amount of traffic lights between source and target
         """
-        applogger.debug("Start of Query")
         args = [(sourceVertex, True), (targetVertex, False)]
         pool = ThreadPool(2)
         #Run a bi-directional dijsktra parallely : A forward Dijsktra from source and a backward dijsktra from the target
@@ -297,6 +400,9 @@ class OverlayGraph():
         pool.join()
         verticesVisitedDuringForwardSearch, forwardAccessNodes = forwardResult
         verticesVisitedDuringBackwardSearch, backWardAccessNodes = backwardWardResult
+        #print "forwardAccessNodes : " , len(forwardAccessNodes)
+        #print "backWardAccessNodes : " , len(backWardAccessNodes)
+
         #TargetVertex was already settled during the forward search. We have nothing more to do here.
         if targetVertex in verticesVisitedDuringForwardSearch :
             path,_ = self._getNodesAlongShortestPath(targetVertex, verticesVisitedDuringForwardSearch)
@@ -311,79 +417,78 @@ class OverlayGraph():
         #Sample verticesVisitedDuringOverlaySearch :
         #{10: {'cost': 1, 'intermediateVerticesToParent': [], 'parent': None}, 4: {'cost': 3, 'intermediateVerticesToParent': [], 'parent': None}, 6: {'cost': 4, 'intermediateVerticesToParent': [], 'parent': 4}}
         #Pick the target access node that minimizes the cost of (source to access node) + (access node to target)
-        distToTargetViaAcessNodes = map(lambda accessNode : (verticesVisitedDuringOverlaySearch[accessNode].get("cost") + verticesVisitedDuringBackwardSearch[accessNode].get("cost"), accessNode), backWardAccessNodes)
-        minimumCost, minimumAccessNode = min(distToTargetViaAcessNodes)
+        distToTargetViaAcessNodes = map(lambda accessNode : (verticesVisitedDuringOverlaySearch[accessNode].get("cost") + verticesVisitedDuringBackwardSearch[accessNode].get("cost"), verticesVisitedDuringOverlaySearch[accessNode].get("hops"), accessNode), backWardAccessNodes)
+        #print distToTargetViaAcessNodes
+        minimumCost, _, minimumAccessNode = min(distToTargetViaAcessNodes)
         #Here , we create the shortest route from the source to target.
         #For , overlay search, we use the parent heirarchy and the edgeIntermediate vertices to retrieve the actual path
+        #print minimumAccessNode
+        #print verticesVisitedDuringOverlaySearch[minimumAccessNode]
         pathAlongOverLayGraph,lastNode = self._getNodesAlongShortestPath(minimumAccessNode, verticesVisitedDuringOverlaySearch, True)
         pathAlongForwardSearch,_ = self._getNodesAlongShortestPath(lastNode, verticesVisitedDuringForwardSearch, False)
         pathAlongBackWardSearch,_ = self._getNodesAlongShortestPath(minimumAccessNode, verticesVisitedDuringBackwardSearch, False)
         path = []
         path.extend(pathAlongOverLayGraph)
         path.extend(pathAlongForwardSearch)
+        #print list(reversed(pathAlongForwardSearch))
+        #print list(reversed(pathAlongOverLayGraph))
+        #print pathAlongBackWardSearch
         #The parent heirarchy lists the route in reverse order. So we reverse it to obtain the forward order
         path.reverse()
         #Backward search operated in the backward direction. So the parent heirarchy will already list vertices in the actual forward order
         #So, no need to reverse it
         path.extend(pathAlongBackWardSearch)
-        applogger.debug("End of Query")
-        #print path
         jsonDict = {"minCost":minimumCost, "route" : path}
         return jsonDict
 
-    def _modifyEdgeLabel(self,u,v, layerNum, currentEdgeLabel, newEdgeLabel) :
+    def _modifyEdgeLabel(self,u,v, layerNum, currentEdgeLabel, delta) :
         modifiedEdgeLabel = currentEdgeLabel.copy()
-        sameWeights = True
-        for metric in newEdgeLabel :
-            #If all the metrices in the new weights are equaivalent to whats already on the edge, we don't have to update the edge
-            if modifiedEdgeLabel.get(metric) != newEdgeLabel.get(metric):
-                sameWeights = false
-            modifiedEdgeLabel[metric] = newEdgeLabel.get(metric)
-        if not sameWeights :
-            applogger.debug("Modifying %s, %s, %s, %s"%(u, v, currentEdgeLabel, layerNum))
-            self._graphLayer[layerNum].delete_edge(u, v, currentEdgeLabel)
-            self._graphLayer[layerNum].add_edge(u, v, modifiedEdgeLabel)
-            #Sage doesnt support editing in place the edge weight between u,v when there are multiple edges between them
-            #So, I delete the old edge and then add the new edge with new weights(to emulate a modification)
-        else :
-            applogger.debug("Skip Modifying %s, %s, %s, %s"%(u, v, currentEdgeLabel, layerNum))
+        for metric in delta :
+            modifiedEdgeLabel[metric] = modifiedEdgeLabel.get(metric, 0) + delta.get(metric)
+        self._graphLayer[layerNum].delete_edge(u, v, currentEdgeLabel)
+        self._graphLayer[layerNum].add_edge(u, v, modifiedEdgeLabel)
+        #Sage doesnt support editing in place the edge weight between u,v when there are multiple edges between them
+        #So, I delete the old edge and then add the new edge with new weights(to emulate a modification)
 
     #Recursive internal function to update the edge weight
     #Edge weights need to propogated from the baselayer upto the highest overlay layer
     #So we call this function recursively for each layer
-    def _updateHeirarchicalInternal(self, sourceCoveredVertex, targetCoveredVertex, newWeight, layerNum, changedU, changedV):
-        #applogger.debug("starting fn with %s, %s, %s, %s and %s"%(sourceCoveredVertex, targetCoveredVertex, layerNum, changedU, changedV))
+    def _updateHeirarchicalInternal(self, sourceCoveredVertex, targetCoveredVertex, delta, layerNum, changedU, changedV, alreadyDone):
         #We iterate through all routes between two covered vertices , sourceCoveredVertex and targetCoveredVertex
+        if alreadyDone.get((sourceCoveredVertex, targetCoveredVertex, layerNum), False):
+            applogger.debug("Skip Modifying %s, %s, %s"%(sourceCoveredVertex, targetCoveredVertex, layerNum))
+            return
         for _, _, currentEdgeLabel in self._graphLayer[layerNum].edge_boundary([sourceCoveredVertex],[targetCoveredVertex]) :
             intermediateVertices = currentEdgeLabel.get("intermediateVertices", [])
             #if between u and v, there is a direct edge(No intermediate vertices) betweeen them change the cost of the direct edge
             if changedU == sourceCoveredVertex and changedV == targetCoveredVertex and not intermediateVertices :
-                self._modifyEdgeLabel(sourceCoveredVertex,targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+                self._modifyEdgeLabel(sourceCoveredVertex,targetCoveredVertex, layerNum, currentEdgeLabel, delta)
             elif changedU == sourceCoveredVertex:
                 #If sourceVertex(First vertex) of this route is u, the edge uv exist only in this route if the first intermediate node is v.
                 #We modify such a route, if it exists
                 if intermediateVertices and changedV  == intermediateVertices[0]:
-                    self._modifyEdgeLabel(sourceCoveredVertex, targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+                    self._modifyEdgeLabel(sourceCoveredVertex, targetCoveredVertex, layerNum, currentEdgeLabel, delta)
             elif changedV == targetCoveredVertex :
                 #If targetVertex(last vertex) of this route is v, the edge uv exist only in this route if the last intermediate node is u.
                 #We modify such a route, if it exists
                 if intermediateVertices and changedU  == intermediateVertices[-1]:
-                    self._modifyEdgeLabel(sourceCoveredVertex, targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+                    self._modifyEdgeLabel(sourceCoveredVertex, targetCoveredVertex, layerNum, currentEdgeLabel, delta)
             else :
             #If neither u or v are present at the first and last node, edge uv exists in this route only
             #if they are present side by side along the intermediate path
                 for i in xrange(len(intermediateVertices)-1):
                     if intermediateVertices[i] == changedU :
                         if intermediateVertices[i+1] == changedV :
-                            self._modifyEdgeLabel(sourceCoveredVertex , targetCoveredVertex, layerNum, currentEdgeLabel, newWeight)
+                            self._modifyEdgeLabel(sourceCoveredVertex , targetCoveredVertex, layerNum, currentEdgeLabel, delta)
                         break
+        alreadyDone[(sourceCoveredVertex, targetCoveredVertex, layerNum)] = True
         if layerNum >= self._numberOfLayers - 1:
             return
         #In this layer, we have modified the edge weight of a route between sourceCoveredVertex and targetCoveredVertex
         #If both sourceCoveredVertex and targetCoveredVertex are covered vertices in the next layer as well, the modified edge exist
         #between them in the next layer as well.
         if sourceCoveredVertex in self._coveredVertices[layerNum + 1] and targetCoveredVertex in self._coveredVertices[layerNum + 1] :
-                self._updateHeirarchicalInternal(sourceCoveredVertex, targetCoveredVertex, newWeight, layerNum + 1, changedU, changedV)
+                self._updateHeirarchicalInternal(sourceCoveredVertex, targetCoveredVertex, delta, layerNum + 1, changedU, changedV, alreadyDone)
         #If targetCoveredVertex in this layer , is not a covered vertex on the next layer, the edge modified at this layer is going to be in one of
         #the routes between sourceCoveredVertex and an outneighbour of targetCoveredVertex.
         #Remember : Since covered vertex at layer i+1 is a vertex cover of layer i, if targetCoveredVertex is not in the layer i+1's cover,
@@ -391,22 +496,27 @@ class OverlayGraph():
         elif sourceCoveredVertex in self._coveredVertices[layerNum + 1] : ##target not in  vc
             for neighbouroftargetCoveredVertex in self._graphLayer[layerNum].neighbors_out(targetCoveredVertex) :
                 if neighbouroftargetCoveredVertex != sourceCoveredVertex :
-                    self._updateHeirarchicalInternal(sourceCoveredVertex,neighbouroftargetCoveredVertex, newWeight, layerNum + 1, changedU, changedV)
+                    self._updateHeirarchicalInternal(sourceCoveredVertex,neighbouroftargetCoveredVertex, delta, layerNum + 1, changedU, changedV, alreadyDone)
         else : #source is not in vc , target is
         #If sourceCoveredVertex in this layer , is not a covered vertex on the next layer, the edge modified at this layer is going to be in one of
         #the routes between in_neighbour of sourceCoveredVertex and an targetCoveredVertex.
         #Remember : it is impossible for both sourceCoveredVertex and targetCoveredVertex to be not in the covered vertices of the next layer
         #since that will violate the vertex cover property.
             for inNeighbourOfSource in self._graphLayer[layerNum].neighbors_in(sourceCoveredVertex) :
-                self._updateHeirarchicalInternal(inNeighbourOfSource,targetCoveredVertex, newWeight, layerNum + 1, changedU, changedV)
+                self._updateHeirarchicalInternal(inNeighbourOfSource,targetCoveredVertex, delta, layerNum + 1, changedU, changedV, alreadyDone)
 
     #Public function that is called to update the weight of the edge uv.
-    #newWeight is a dict with {metric1:newcost, metric2:newCost}.
+    #delta is a dict with {metric1:newcost, metric2:newCost}.
     #If metric1 and metric2 already exist on the edge, their costs are updated or else a new metric is added
+    @timeit
     def updateWeight(self, u, v, newWeight) :
+        delta = {}
         response={"success":True}
         try :
-            self._updateHeirarchicalInternal(u, v, newWeight, 0, u, v)
+            uv = self._graphLayer[0].edge_label(u,v)
+            for metric in newWeight:
+                delta[metric] = newWeight[metric] - uv.get(metric, 0)
+            self._updateHeirarchicalInternal(u, v, delta, 0, u, v, {})
         except :
             response["success"] = False
         return response
